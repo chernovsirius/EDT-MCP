@@ -23,6 +23,7 @@ public final class HostToolCapabilities
         define("list_projects", Capability.HEADLESS, "Core/file service path; platform readiness and ordinary tool preconditions still apply");
         define("get_configuration_properties", Capability.HEADLESS, "EDT 2026.2.2 real headless probe returned content on the caller thread; stdio_headless exercises this path");
         define("clean_project", Capability.HEADLESS, "Core/file service path; platform readiness and ordinary tool preconditions still apply");
+        define("check_changed", Capability.HEADLESS, "Sirius: git diff + targeted revalidation + marker summary");
         define("revalidate_objects", Capability.HEADLESS, "Core/file service path; platform readiness and ordinary tool preconditions still apply");
         define("resync_to_disk", Capability.HEADLESS, "EDT 2026.2.2 real headless probe returned content on the caller thread; stdio_headless exercises this path");
         define("export_configuration_to_xml", Capability.HEADLESS, "Core/file service path; platform readiness and ordinary tool preconditions still apply");

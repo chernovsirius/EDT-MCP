@@ -46,6 +46,7 @@ public enum ToolPreset
     static final Set<String> READ_ONLY_KEEPS_DESPITE_WRITE_HINT = Set.of(
         "compare_configurations", //$NON-NLS-1$
         "enable_toolset", //$NON-NLS-1$
+        "check_changed", //$NON-NLS-1$
         "revalidate_objects"); //$NON-NLS-1$
 
     /** A holder initializes the shared policy before the enum constructors call either builder. */

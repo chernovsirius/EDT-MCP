@@ -23,7 +23,7 @@ public enum ToolGroup
         "get_edt_version", "get_server_status", "get_tool_guide", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         "list_toolsets", "enable_toolset", "list_projects", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$
         "get_configuration_properties", //$NON-NLS-1$
-        "clean_project", "revalidate_objects", "resync_to_disk", "get_check_description", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
+        "clean_project", "check_changed", "revalidate_objects", "resync_to_disk", "get_check_description", //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
         "export_configuration_to_xml", "import_configuration_from_xml", //$NON-NLS-1$ //$NON-NLS-2$
         "import_project_from_file", //$NON-NLS-1$
         "delete_project", "create_project", "get_event_log", "get_mcp_history"), //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$

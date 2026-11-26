@@ -39,7 +39,9 @@ import com._1c.g5.v8.dt.validation.marker.IMarkerManager;
 import com._1c.g5.v8.dt.validation.marker.Marker;
 import com._1c.g5.v8.dt.validation.marker.MarkerSeverity;
 import com.e1c.g5.v8.dt.check.qfix.IFixRepository;
+import com.e1c.g5.v8.dt.check.settings.CheckUid;
 import com.e1c.g5.v8.dt.check.settings.ICheckRepository;
+import com.ditrix.edt.mcp.server.tools.SiriusProfile;
 
 import com.ditrix.edt.mcp.server.utils.BmModelResolver;
 import com.ditrix.edt.mcp.server.Activator;
@@ -140,6 +142,9 @@ public class GetProjectErrorsTool implements IMcpTool
      */
     static final int ADDRESS_TABLE_BUDGET_CHARS = OutputSizeGuard.MAX_CONTENT_CHARS / 3;
 
+    /** Sirius per-call excluded check IDs (noisy warnings hidden by default; ERRORS never suppressed). */
+    private static final ThreadLocal<Set<String>> CURRENT_EXCLUDED_CHECKS = new ThreadLocal<>();
+
     @Override
     public String getName()
     {
@@ -177,6 +182,10 @@ public class GetProjectErrorsTool implements IMcpTool
             .enumProperty("responseFormat", //$NON-NLS-1$
                 "Output verbosity (optional): concise (default) = leaner table; detailed = adds stored Offset/Length and 'Has docs'", //$NON-NLS-1$
                 "concise", "detailed") //$NON-NLS-1$ //$NON-NLS-2$
+            .booleanProperty("includeNoisy", //$NON-NLS-1$
+                "Sirius: include noisy standard-ERP style warnings (default false; hidden counts are summarized; ERRORS are never hidden)") //$NON-NLS-1$
+            .stringArrayProperty("excludeChecks", //$NON-NLS-1$
+                "Sirius: additional check IDs to hide from non-error warnings (optional)") //$NON-NLS-1$
             .build();
     }
 
@@ -292,13 +301,29 @@ public class GetProjectErrorsTool implements IMcpTool
 
         List<String> modulePaths = modulePathsOf(params);
 
-        if (!objectFqns.isEmpty())
+        boolean includeNoisy = JsonUtils.extractBooleanArgument(params, "includeNoisy", false); //$NON-NLS-1$
+        List<String> extraExclude = cleanedEntries(JsonUtils.extractArrayArgument(params, "excludeChecks")); //$NON-NLS-1$
+        Set<String> excludedChecks = new HashSet<>();
+        if (!includeNoisy && (checkId == null || checkId.isEmpty()))
         {
-            return getProjectErrorsByAddress(projectName, severity, checkId, objectFqns, limit,
-                detailed, modulePaths, offset);
+            excludedChecks.addAll(SiriusProfile.DEFAULT_NOISY_CHECKS);
         }
-        return getProjectErrors(projectName, severity, checkId, objects, limit, detailed, false, modulePaths,
-            offset);
+        excludedChecks.addAll(extraExclude);
+        CURRENT_EXCLUDED_CHECKS.set(excludedChecks.isEmpty() ? Collections.emptySet() : excludedChecks);
+        try
+        {
+            if (!objectFqns.isEmpty())
+            {
+                return getProjectErrorsByAddress(projectName, severity, checkId, objectFqns, limit,
+                    detailed, modulePaths, offset);
+            }
+            return getProjectErrors(projectName, severity, checkId, objects, limit, detailed, false, modulePaths,
+                offset);
+        }
+        finally
+        {
+            CURRENT_EXCLUDED_CHECKS.remove();
+        }
     }
 
     /** The normalised, non-blank {@code modulePaths} entries of a call, in request order (never {@code null}). */
@@ -477,6 +502,7 @@ public class GetProjectErrorsTool implements IMcpTool
             // entry that matched nothing is indistinguishable from a typo. Only the exact
             // objectFqns input can answer that question - see getProjectErrorsByAddress.
             appendUnresolvedWarnings(md, unresolvedShown, unresolvedFilteredOut);
+            appendHiddenNoisyNote(md, collectContext.hiddenNoisyCounts);
             // modulePaths, by contrast, names files: an unknown path is a provable miss.
             appendModulePathsNotFound(md, projectName, modulePaths);
 
@@ -684,6 +710,7 @@ public class GetProjectErrorsTool implements IMcpTool
             List<ErrorInfo> errors = Collections.emptyList();
             int total = 0;
             StringBuilder otherSeverities = new StringBuilder();
+            Map<String, Integer> hiddenNoisy = Collections.emptyMap();
             if (!resolution.resolved.isEmpty())
             {
                 // The SCAN is scoped by the spellings that really resolved, PER PROJECT (see
@@ -700,6 +727,7 @@ public class GetProjectErrorsTool implements IMcpTool
                     MarkerRows.groupMarkersByProject(markerManager, projectName);
                 errors = collectErrors(markersByProject, bmModelManager, collectContext);
                 total = collectContext.total();
+                hiddenNoisy = collectContext.hiddenNoisyCounts;
                 if (total == 0)
                 {
                     appendOtherSeverities(otherSeverities, markersByProject, bmModelManager, collectContext);
@@ -720,6 +748,7 @@ public class GetProjectErrorsTool implements IMcpTool
                 return resolution.error;
             }
             StringBuilder withModuleNote = new StringBuilder(report).append(otherSeverities);
+            appendHiddenNoisyNote(withModuleNote, hiddenNoisy);
             appendModulePathsNotFound(withModuleNote, projectName, modulePaths);
             // The machine rows are the rows the report shows: a row cut by the size budget is on the next page.
             return addressPayload(withModuleNote.toString(), errors.subList(0, Math.min(shown, errors.size())),
@@ -2507,6 +2536,10 @@ public class GetProjectErrorsTool implements IMcpTool
                 {
                     continue;
                 }
+                if (isExcludedNoisy(marker, context))
+                {
+                    continue;
+                }
                 int index = context.total[0]++;
                 if (index < context.offset || errors.size() >= context.limit)
                 {
@@ -2617,6 +2650,56 @@ public class GetProjectErrorsTool implements IMcpTool
     }
 
     /**
+     * Sirius: returns true when a non-error marker matches an excluded check ID,
+     * recording its count for the compact summary line. ERRORS/BLOCKER/CRITICAL are never hidden.
+     */
+    private static boolean isExcludedNoisy(Marker marker, CollectContext context)
+    {
+        if (context.excludedChecks.isEmpty())
+        {
+            return false;
+        }
+        MarkerSeverity sev = marker.getSeverity() != null ? marker.getSeverity() : MarkerSeverity.NONE;
+        if (sev == MarkerSeverity.ERRORS || sev == MarkerSeverity.BLOCKER || sev == MarkerSeverity.CRITICAL)
+        {
+            return false;
+        }
+        String shortUid = marker.getCheckId() != null ? marker.getCheckId() : ""; //$NON-NLS-1$
+        if (context.excludedChecks.contains(shortUid))
+        {
+            context.hiddenNoisyCounts.merge(shortUid, 1, Integer::sum);
+            return true;
+        }
+        CheckUid uid = MarkerRows.resolveCheckUid(marker, shortUid, context.checkRepository);
+        String sym = uid != null ? uid.getCheckId() : null;
+        if (sym != null && context.excludedChecks.contains(sym))
+        {
+            context.hiddenNoisyCounts.merge(sym, 1, Integer::sum);
+            return true;
+        }
+        return false;
+    }
+
+    /** Sirius: appends a compact one-line summary of hidden noisy checks when any were skipped. */
+    private static void appendHiddenNoisyNote(StringBuilder md, Map<String, Integer> hiddenNoisyCounts)
+    {
+        if (hiddenNoisyCounts == null || hiddenNoisyCounts.isEmpty())
+        {
+            return;
+        }
+        int totalHidden = 0;
+        List<String> parts = new ArrayList<>();
+        for (Map.Entry<String, Integer> e : hiddenNoisyCounts.entrySet())
+        {
+            totalHidden += e.getValue();
+            parts.add("`" + e.getKey() + "`=" + e.getValue()); //$NON-NLS-1$ //$NON-NLS-2$
+        }
+        md.append("\n> Hidden noisy checks (").append(totalHidden).append("): ") //$NON-NLS-1$ //$NON-NLS-2$
+            .append(String.join(", ", parts)) //$NON-NLS-1$
+            .append(". Pass `includeNoisy=true` to show all.\n"); //$NON-NLS-1$
+    }
+
+    /**
      * Immutable holder for the per-call collection context threaded through {@link #collectErrors}:
      * the severity / checkId / objects filters, the check repository, the result {@code limit} and
      * the two unresolved-marker out-counters. The {@code int[]} counters are shared references whose
@@ -2646,6 +2729,10 @@ public class GetProjectErrorsTool implements IMcpTool
         final int offset;
         /** Out-counter: how many problems match the filters, over every page. */
         final int[] total = new int[1];
+        /** Sirius: check IDs hidden from non-error results. */
+        final Set<String> excludedChecks;
+        /** Sirius: per-check counts of hidden noisy markers. */
+        final Map<String, Integer> hiddenNoisyCounts = new LinkedHashMap<>();
 
         CollectContext(MarkerSeverity severityFilter, String checkId, Set<String> objects,
             ICheckRepository checkRepository, IFixRepository fixRepository, int limit,
@@ -2673,6 +2760,8 @@ public class GetProjectErrorsTool implements IMcpTool
             this.unresolvedFilteredOut = unresolvedFilteredOut;
             this.exactScope = exactScope;
             this.objectsByProject = objectsByProject;
+            Set<String> activeExcluded = CURRENT_EXCLUDED_CHECKS.get();
+            this.excludedChecks = activeExcluded != null ? activeExcluded : Collections.<String> emptySet();
         }
 
         /**

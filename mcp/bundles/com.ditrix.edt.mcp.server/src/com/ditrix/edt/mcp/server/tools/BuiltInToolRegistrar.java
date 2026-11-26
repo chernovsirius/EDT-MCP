@@ -16,6 +16,7 @@ import com.ditrix.edt.mcp.server.tools.impl.ApplyQuickFixTool;
 import com.ditrix.edt.mcp.server.tools.impl.AskWorkmateTool;
 import com.ditrix.edt.mcp.server.tools.impl.BuildExternalObjectsTool;
 import com.ditrix.edt.mcp.server.tools.impl.CancelJobTool;
+import com.ditrix.edt.mcp.server.tools.impl.CheckChangedTool;
 import com.ditrix.edt.mcp.server.tools.impl.CleanProjectTool;
 import com.ditrix.edt.mcp.server.tools.impl.CompareConfigurationsTool;
 import com.ditrix.edt.mcp.server.tools.impl.CreateGitBranchTool;
@@ -282,7 +283,10 @@ public final class BuiltInToolRegistrar
         catalogue.add(new TranslateConfigurationTool());
         catalogue.add(new GetTranslationProjectInfoTool());
 
-        registry.replaceAll(catalogue);
-        Activator.logInfo("Registered " + registry.getToolCount() + " MCP tools"); //$NON-NLS-1$ //$NON-NLS-2$
+        // Sirius custom one-shot git-diff validation tool
+        catalogue.add(new CheckChangedTool());
+
+        registry.replaceAll(SiriusProfile.filterCatalogue(catalogue));
+        Activator.logInfo("Registered " + registry.getToolCount() + " MCP tools (Sirius profile)"); //$NON-NLS-1$ //$NON-NLS-2$
     }
 }

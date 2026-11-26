@@ -37,6 +37,7 @@ import com.ditrix.edt.mcp.server.utils.MarkdownUtils;
 import com.ditrix.edt.mcp.server.utils.MetadataTypeUtils;
 import com.ditrix.edt.mcp.server.utils.ProjectContext;
 import com.ditrix.edt.mcp.server.utils.ProjectStateChecker;
+import com.ditrix.edt.mcp.server.utils.SiriusCheckEnabler;
 import com.e1c.g5.v8.dt.check.ICheckScheduler;
 
 /**
@@ -219,7 +220,9 @@ public class RevalidateObjectsTool implements IMcpTool
         List<String> skippedNullUri = lookup.skippedNullUri;
         Collection<Object> objectsToValidate = lookup.objectsToValidate;
 
-        // Schedule validation if we found objects
+        // Schedule validation if we found objects (temporarily enabling check computers
+        // when EDT runs with -DdisableProjectChecks=true)
+        int forcedComputers = 0;
         if (!objectsToValidate.isEmpty())
         {
             // Filter out any null values (shouldn't happen but defensive coding)
@@ -234,15 +237,35 @@ public class RevalidateObjectsTool implements IMcpTool
             
             if (!validObjects.isEmpty())
             {
-                // Use 4-parameter version without IBmTransaction
-                // Use empty set for checkIds = validate with all checks
-                checkScheduler.scheduleValidation(project, Collections.emptySet(), 
-                        validObjects, monitor);
+                try
+                {
+                    forcedComputers = SiriusCheckEnabler.withTargetedChecksEnabled(project, () -> {
+                        // Use 4-parameter version without IBmTransaction
+                        // Use empty set for checkIds = validate with all checks
+                        checkScheduler.scheduleValidation(project, Collections.emptySet(),
+                                validObjects, monitor);
+                        // Wait for build jobs and derived data to complete while checks are enabled
+                        BuildUtils.waitForBuildAndDerivedData(project, monitor);
+                    });
+                }
+                catch (CoreException e)
+                {
+                    throw e;
+                }
+                catch (Exception e)
+                {
+                    throw new RuntimeException(e);
+                }
+            }
+            else
+            {
+                BuildUtils.waitForBuildAndDerivedData(project, monitor);
             }
         }
-        
-        // Wait for build jobs and derived data to complete
-        BuildUtils.waitForBuildAndDerivedData(project, monitor);
+        else
+        {
+            BuildUtils.waitForBuildAndDerivedData(project, monitor);
+        }
 
         // Action result: counts + per-object outcome lists. No round-trip ID or
         // machine-structured payload, so MARKDOWN is the right format (see the
@@ -255,7 +278,8 @@ public class RevalidateObjectsTool implements IMcpTool
             .put("project", projectName) //$NON-NLS-1$
             .put("mode", MODE_OBJECTS) //$NON-NLS-1$
             .put("objectsRequested", objectFqns.size()) //$NON-NLS-1$
-            .put("objectsFound", found.size()); //$NON-NLS-1$
+            .put("objectsFound", found.size()) //$NON-NLS-1$
+            .put("targetedChecksForced", forcedComputers); //$NON-NLS-1$
 
         StringBuilder body = new StringBuilder();
         body.append("# Revalidation completed\n\n"); //$NON-NLS-1$
