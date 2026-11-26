@@ -486,13 +486,13 @@ public final class SiriusAuditChecks
             }
             else if ("Configuration/Configuration.mdo".equals(norm)) //$NON-NLS-1$
             {
-                checkConfigurationMdoReferences(file, srcDir, norm, findings);
+                checkConfigurationMdoReferences(file, srcDir, baseSrcDir, norm, findings);
             }
         }
     }
 
-    private static void checkConfigurationMdoReferences(Path configMdo, Path srcDir, String rel,
-        List<Finding> findings)
+    private static void checkConfigurationMdoReferences(Path configMdo, Path srcDir, Path baseSrcDir,
+        String rel, List<Finding> findings)
     {
         try
         {
@@ -510,6 +510,7 @@ public final class SiriusAuditChecks
                 {
                     continue;
                 }
+                String tagLower = localName(n).toLowerCase(Locale.ROOT);
                 String text = n.getTextContent();
                 if (text == null || !text.contains(".")) //$NON-NLS-1$
                 {
@@ -528,7 +529,13 @@ public final class SiriusAuditChecks
                 {
                     continue;
                 }
-                if (!Files.isDirectory(srcDir.resolve(dir).resolve(name)))
+                // Only check top-level collection tags (e.g. <catalogs>Catalog.X),
+                // not property references like <defaultLanguage>Language.Русский.
+                if (!tagLower.equals(dir.toLowerCase(Locale.ROOT)))
+                {
+                    continue;
+                }
+                if (!objectDirExists(srcDir, baseSrcDir, dir, name))
                 {
                     findings.add(new Finding("ERROR", rel, null, "dangling-config-object", //$NON-NLS-1$ //$NON-NLS-2$
                         "Configuration.mdo lists '" + trimmed + "', but src/" + dir + "/" + name + " does not exist.")); //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$
