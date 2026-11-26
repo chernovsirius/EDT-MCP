@@ -78,6 +78,7 @@ public class RevalidateObjectsTool implements IMcpTool
         return JsonSchemaBuilder.object()
             .stringProperty("projectName", "EDT project name (required)", true) //$NON-NLS-1$ //$NON-NLS-2$
             .stringArrayProperty(KEY_OBJECTS, "FQNs to revalidate (e.g. ['Document.SalesOrder']). Russian type names supported (e.g. 'Документ.ПродажаТоваров'). Empty array = full project revalidation") //$NON-NLS-1$
+            .integerProperty("waitReadySec", "Seconds to wait if the project is still starting/building after EDT launch (default 30, 0 = fail immediately).") //$NON-NLS-1$ //$NON-NLS-2$
             .build();
     }
     
@@ -91,11 +92,13 @@ public class RevalidateObjectsTool implements IMcpTool
     public String execute(Map<String, String> params)
     {
         String projectName = JsonUtils.extractStringArgument(params, "projectName"); //$NON-NLS-1$
+        int waitReadySec = JsonUtils.extractIntArgument(params, "waitReadySec", 30); //$NON-NLS-1$
 
         // Refuse only the transient BUILDING state; a missing/closed project
         // falls through to the value-naming 'Project not found' below.
         if (projectName != null && !projectName.isEmpty())
         {
+            SiriusCheckEnabler.waitProjectReady(projectName, waitReadySec);
             String building = ProjectStateChecker.buildingErrorOrNull(projectName);
             if (building != null)
             {

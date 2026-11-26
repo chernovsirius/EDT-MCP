@@ -45,6 +45,7 @@ import com.ditrix.edt.mcp.server.utils.MarkdownUtils;
 import com.ditrix.edt.mcp.server.utils.MarkerRows;
 import com.ditrix.edt.mcp.server.utils.ProjectContext;
 import com.ditrix.edt.mcp.server.utils.ProjectStateChecker;
+import com.ditrix.edt.mcp.server.utils.SiriusAuditChecks;
 import com.ditrix.edt.mcp.server.utils.SiriusCheckEnabler;
 import com.e1c.g5.v8.dt.check.qfix.IFixRepository;
 import com.e1c.g5.v8.dt.check.settings.ICheckRepository;
@@ -124,19 +125,21 @@ public class CheckChangedTool implements IMcpTool
     @Override
     public String getDescription()
     {
-        return "Sirius one-shot validation: reads git changes in an EDT project, runs targeted revalidation " //$NON-NLS-1$
-            + "(works even with -DdisableProjectChecks=true), and returns a compact noise-filtered report " //$NON-NLS-1$
-            + "of errors and warnings (marking lines touched by git diff)."; //$NON-NLS-1$
+        return "One-shot validation of git changes in an EDT project: waits for project readiness, runs targeted " //$NON-NLS-1$
+            + "EDT revalidation (works with -DdisableProjectChecks=true), checks role rights, dangling references, " //$NON-NLS-1$
+            + "&ChangeAndValidate intercepts, universal BSL/form hazards, and optional bsl-ls; returns a compact report."; //$NON-NLS-1$
     }
 
     @Override
     public String getInputSchema()
     {
         return JsonSchemaBuilder.object()
-            .stringProperty("projectName", "EDT project name (e.g. 'srs-erp' or 'srs-erp.СРС_Доработки')", true) //$NON-NLS-1$ //$NON-NLS-2$
+            .stringProperty("projectName", "EDT project name", true) //$NON-NLS-1$ //$NON-NLS-2$
             .stringProperty("gitRef", "Optional git base ref for diff (e.g. 'HEAD~1', 'main'). Omit for uncommitted working tree changes (staged + unstaged + untracked).") //$NON-NLS-1$ //$NON-NLS-2$
             .booleanProperty("onlyChangedLines", "When true, non-error warnings outside git diff lines are hidden (ERRORS are always shown). Default: false.") //$NON-NLS-1$ //$NON-NLS-2$
             .booleanProperty("includeNoisy", "When true, include noisy standard-ERP style warnings normally hidden from the table. Default: false.") //$NON-NLS-1$ //$NON-NLS-2$
+            .booleanProperty("runBslLs", "When true, also runs external bsl-language-server on changed .bsl files (requires -Dedt.mcp.bslLsJar or BSL_LS_JAR). Default: false.") //$NON-NLS-1$ //$NON-NLS-2$
+            .integerProperty("waitReadySec", "Seconds to wait if the project is still starting/building after EDT launch (default 60, 0 = fail immediately).") //$NON-NLS-1$ //$NON-NLS-2$
             .integerProperty("limit", "Max non-error warnings to display (default 30, max 200; all ERRORS are always shown).") //$NON-NLS-1$ //$NON-NLS-2$
             .build();
     }
@@ -156,6 +159,9 @@ public class CheckChangedTool implements IMcpTool
             return ToolResult.error("projectName is required").toJson(); //$NON-NLS-1$
         }
 
+        int waitReadySec = JsonUtils.extractIntArgument(params, "waitReadySec", 60); //$NON-NLS-1$
+        SiriusCheckEnabler.waitProjectReady(projectName, waitReadySec);
+
         String building = ProjectStateChecker.buildingErrorOrNull(projectName);
         if (building != null)
         {
@@ -165,6 +171,7 @@ public class CheckChangedTool implements IMcpTool
         String gitRef = JsonUtils.extractStringArgument(params, "gitRef"); //$NON-NLS-1$
         boolean onlyChangedLines = JsonUtils.extractBooleanArgument(params, "onlyChangedLines", false); //$NON-NLS-1$
         boolean includeNoisy = JsonUtils.extractBooleanArgument(params, "includeNoisy", false); //$NON-NLS-1$
+        boolean runBslLs = JsonUtils.extractBooleanArgument(params, "runBslLs", false); //$NON-NLS-1$
         int limit = Math.max(1, Math.min(200, JsonUtils.extractIntArgument(params, "limit", 30))); //$NON-NLS-1$
 
         try
@@ -201,12 +208,15 @@ public class CheckChangedTool implements IMcpTool
                 projPrefix = rootPath.relativize(projPath).toString().replace('\\', '/') + "/"; //$NON-NLS-1$
             }
 
-            // Collect changed files & changed BSL line numbers
+            // Collect changed & newly added files + changed BSL line numbers
             Set<String> changedRepoPaths = collectChangedPaths(gitRoot, projPrefix, gitRef);
+            Set<String> addedRepoPaths = collectAddedPaths(gitRoot, projPrefix, gitRef);
             Map<String, Set<Integer>> changedLinesByModule = collectChangedBslLines(gitRoot, projPrefix, gitRef);
 
             Set<String> fqns = new LinkedHashSet<>();
+            Set<String> addedFqns = new LinkedHashSet<>();
             List<String> srcRelPaths = new ArrayList<>();
+            Set<String> addedSrcRelPaths = new LinkedHashSet<>();
             for (String repoRel : changedRepoPaths)
             {
                 String insideProj = projPrefix.isEmpty() ? repoRel
@@ -219,10 +229,19 @@ public class CheckChangedTool implements IMcpTool
                 {
                     String relFromSrc = insideProj.substring("src/".length()); //$NON-NLS-1$
                     srcRelPaths.add(relFromSrc);
+                    boolean isAdded = addedRepoPaths.contains(repoRel);
+                    if (isAdded)
+                    {
+                        addedSrcRelPaths.add(relFromSrc);
+                    }
                     String fqn = srcPathToFqn(relFromSrc);
                     if (fqn != null)
                     {
                         fqns.add(fqn);
+                        if (isAdded && relFromSrc.endsWith(".mdo")) //$NON-NLS-1$
+                        {
+                            addedFqns.add(fqn);
+                        }
                     }
                 }
             }
@@ -244,9 +263,13 @@ public class CheckChangedTool implements IMcpTool
                 return revalidateOut;
             }
 
-            // Step 2: Collect markers for the changed objects
+            // Step 2: Universal project-agnostic static audit (roles, dangling refs, intercepts, BSL/form, optional bsl-ls)
+            List<SiriusAuditChecks.Finding> auditFindings = SiriusAuditChecks.runAll(
+                project, srcRelPaths, addedSrcRelPaths, addedFqns, runBslLs);
+
+            // Step 3: Collect EDT markers + merge audit findings into compact report
             return buildCompactReport(project, fqnList, srcRelPaths, changedLinesByModule,
-                gitRef, onlyChangedLines, includeNoisy, limit);
+                auditFindings, gitRef, onlyChangedLines, includeNoisy, limit);
         }
         catch (Exception e)
         {
@@ -256,8 +279,8 @@ public class CheckChangedTool implements IMcpTool
     }
 
     private static String buildCompactReport(IProject project, List<String> fqnList, List<String> srcRelPaths,
-        Map<String, Set<Integer>> changedLinesByModule, String gitRef, boolean onlyChangedLines,
-        boolean includeNoisy, int limit)
+        Map<String, Set<Integer>> changedLinesByModule, List<SiriusAuditChecks.Finding> auditFindings,
+        String gitRef, boolean onlyChangedLines, boolean includeNoisy, int limit)
     {
         IMarkerManager markerManager = Activator.getDefault().getMarkerManager();
         if (markerManager == null)
@@ -278,6 +301,29 @@ public class CheckChangedTool implements IMcpTool
         Map<String, Integer> hiddenNoisyCounts = new LinkedHashMap<>();
         int[] hiddenOutsideDiff = {0};
         int[] unresolvedFiltered = {0};
+
+        // Merge project-agnostic static audit findings first (always prioritized)
+        if (auditFindings != null)
+        {
+            for (SiriusAuditChecks.Finding f : auditFindings)
+            {
+                MarkerRows.Row row = new MarkerRows.Row();
+                row.modulePath = f.location;
+                row.objectPresentation = f.location;
+                row.line = f.line;
+                row.checkId = f.checkId;
+                row.message = f.message;
+                boolean onChangedLine = isOnChangedLine(row, changedLinesByModule);
+                if ("ERROR".equalsIgnoreCase(f.severity)) //$NON-NLS-1$
+                {
+                    errorRows.add(new RowWithSeverity(row, MarkerSeverity.ERRORS, onChangedLine));
+                }
+                else
+                {
+                    warningRows.add(new RowWithSeverity(row, MarkerSeverity.MAJOR, onChangedLine));
+                }
+            }
+        }
 
         Runnable scan = () -> {
             for (Marker marker : projectMarkers)
@@ -524,6 +570,54 @@ public class CheckChangedTool implements IMcpTool
                 {
                     pathPart = pathPart.substring(arrow + 4).trim();
                 }
+                if (pathPart.startsWith("\"") && pathPart.endsWith("\"") && pathPart.length() >= 2) //$NON-NLS-1$ //$NON-NLS-2$
+                {
+                    pathPart = pathPart.substring(1, pathPart.length() - 1);
+                }
+                result.add(pathPart.replace('\\', '/'));
+            }
+        }
+        return result;
+    }
+
+    private static Set<String> collectAddedPaths(File gitRoot, String projPrefix, String gitRef)
+        throws IOException, InterruptedException
+    {
+        Set<String> result = new LinkedHashSet<>();
+        String pathSpec = projPrefix.isEmpty() ? "." : projPrefix; //$NON-NLS-1$
+        if (gitRef != null && !gitRef.isEmpty())
+        {
+            for (String line : runGit(gitRoot, "-c", "core.quotepath=false", "diff", "--diff-filter=A", "--name-only", gitRef, "--", pathSpec)) //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+            {
+                String p = line.trim().replace('\\', '/');
+                if (!p.isEmpty())
+                {
+                    result.add(p);
+                }
+            }
+            for (String line : runGit(gitRoot, "-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard", "--", pathSpec)) //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$ //$NON-NLS-6$
+            {
+                String p = line.trim().replace('\\', '/');
+                if (!p.isEmpty())
+                {
+                    result.add(p);
+                }
+            }
+        }
+        else
+        {
+            for (String line : runGit(gitRoot, "-c", "core.quotepath=false", "status", "--porcelain", "--", pathSpec)) //$NON-NLS-1$ //$NON-NLS-2$ //$NON-NLS-3$ //$NON-NLS-4$ //$NON-NLS-5$
+            {
+                if (line.length() < 4)
+                {
+                    continue;
+                }
+                String st = line.substring(0, 2);
+                if (!st.contains("A") && !st.contains("?")) //$NON-NLS-1$ //$NON-NLS-2$
+                {
+                    continue;
+                }
+                String pathPart = line.substring(3).trim();
                 if (pathPart.startsWith("\"") && pathPart.endsWith("\"") && pathPart.length() >= 2) //$NON-NLS-1$ //$NON-NLS-2$
                 {
                     pathPart = pathPart.substring(1, pathPart.length() - 1);

@@ -48,7 +48,9 @@ import com.ditrix.edt.mcp.server.utils.LaunchConfigUtils;
 import com.ditrix.edt.mcp.server.utils.LaunchLifecycleUtils;
 import com.ditrix.edt.mcp.server.utils.LaunchUpdateDialogAutoConfirmer;
 import com.ditrix.edt.mcp.server.utils.PlatformFailures;
+import com.ditrix.edt.mcp.server.utils.ProjectContext;
 import com.ditrix.edt.mcp.server.utils.ProjectStateChecker;
+import com.ditrix.edt.mcp.server.utils.SiriusAuditChecks;
 import com.ditrix.edt.mcp.server.utils.StandaloneServerPortConflictPolicy;
 import com.ditrix.edt.mcp.server.utils.StandaloneServerStateRecovery;
 import com.e1c.g5.dt.applications.ApplicationException;
@@ -172,6 +174,7 @@ public class UpdateDatabaseTool implements IMcpTool
             .booleanProperty("confirmationRequired", //$NON-NLS-1$
                 "true on a preview (no infobase change made); absent/false once updated.") //$NON-NLS-1$
             .stringProperty(McpKeys.PROJECT, "Target EDT project name.") //$NON-NLS-1$
+            .stringProperty("gitBranch", "Current Git branch of the target project, if available (preview).") //$NON-NLS-1$ //$NON-NLS-2$
             .stringProperty(McpKeys.APPLICATION_ID, "Target application ID.") //$NON-NLS-1$
             .stringProperty(KEY_APPLICATION_NAME, "Display name of the target application.") //$NON-NLS-1$
             .stringProperty(KEY_UPDATE_TYPE, "Update mode applied: FULL or INCREMENTAL.") //$NON-NLS-1$
@@ -256,6 +259,11 @@ public class UpdateDatabaseTool implements IMcpTool
         boolean ignoreBranchBinding =
             JsonUtils.extractBooleanArgument(params, KEY_IGNORE_BRANCH_BINDING, false);
         String rawPolicy = JsonUtils.extractStringArgument(params, "externalInfobaseChanges"); //$NON-NLS-1$
+        // Sirius safety default: cancel on external infobase changes unless explicitly overridden
+        if (rawPolicy == null || rawPolicy.isBlank())
+        {
+            rawPolicy = "cancel"; //$NON-NLS-1$
+        }
         ExternalInfobaseChangesPolicy externalChanges = ExternalInfobaseChangesPolicy.parse(rawPolicy);
         if (externalChanges == null)
         {
@@ -1498,7 +1506,22 @@ public class UpdateDatabaseTool implements IMcpTool
         {
             sessionNote = " It will skip the standalone-server session safety check."; //$NON-NLS-1$
         }
-        return ToolResult.success()
+        String gitBranch = SiriusAuditChecks.readGitBranch(ProjectContext.of(projectName).project());
+        StringBuilder siriusWarn = new StringBuilder();
+        if (gitBranch != null)
+        {
+            siriusWarn.append(" Git branch: '").append(gitBranch).append("'."); //$NON-NLS-1$ //$NON-NLS-2$
+            if (SiriusAuditChecks.isProtectedBranch(gitBranch))
+            {
+                siriusWarn.append(" WARNING: updating from protected/release branch '") //$NON-NLS-1$
+                    .append(gitBranch).append("'!"); //$NON-NLS-1$
+            }
+        }
+        if (updateType == ApplicationUpdateType.FULL)
+        {
+            siriusWarn.append(" WARNING: FULL update selected (may take a long time on large configurations)."); //$NON-NLS-1$
+        }
+        ToolResult preview = ToolResult.success()
             .put(McpKeys.ACTION, "preview") //$NON-NLS-1$
             .put("confirmationRequired", true) //$NON-NLS-1$
             .put(McpKeys.PROJECT, projectName)
@@ -1507,10 +1530,15 @@ public class UpdateDatabaseTool implements IMcpTool
             .put(KEY_UPDATE_TYPE, updateType.name())
             .put(KEY_STATE_BEFORE, stateBefore.name())
             .put("willTerminateRunningClients", terminateRunningClients) //$NON-NLS-1$
-            .put("willCheckInfobaseSessions", willCheckSessions) //$NON-NLS-1$
+            .put("willCheckInfobaseSessions", willCheckSessions); //$NON-NLS-1$
+        if (gitBranch != null)
+        {
+            preview.put("gitBranch", gitBranch); //$NON-NLS-1$
+        }
+        return preview
             .put(McpKeys.MESSAGE, "PREVIEW: this would apply a " + updateType.name() //$NON-NLS-1$
                 + " configuration update to the database of application '" + application.getName() //$NON-NLS-1$
-                + "' (project " + projectName + "). This mutates the infobase and is " //$NON-NLS-1$ //$NON-NLS-2$
+                + "' (project " + projectName + ")." + siriusWarn + " This mutates the infobase and is " //$NON-NLS-1$ //$NON-NLS-2$
                 + "IRREVERSIBLE." //$NON-NLS-1$
                 + (terminateRunningClients
                     ? " It will first terminate any 1C client this EDT launched on the infobase." //$NON-NLS-1$

@@ -47,9 +47,13 @@ public final class SiriusProfile
         // Infobase / database update
         "update_database", //$NON-NLS-1$
         "get_applications", //$NON-NLS-1$
+        "get_job_status", //$NON-NLS-1$
         "infobase_sessions", //$NON-NLS-1$
         "infobase_extensions", //$NON-NLS-1$
-        // Metadata adoption & 3-way release merge
+        // Metadata inspection/editing, adoption & 3-way release merge
+        "get_metadata_details", //$NON-NLS-1$
+        "create_metadata", //$NON-NLS-1$
+        "modify_metadata", //$NON-NLS-1$
         "adopt_metadata_object", //$NON-NLS-1$
         "compare_configurations", //$NON-NLS-1$
         "get_comparison_node", //$NON-NLS-1$

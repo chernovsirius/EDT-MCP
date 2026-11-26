@@ -16,6 +16,7 @@ import java.util.Set;
 import org.eclipse.core.resources.IProject;
 
 import com._1c.g5.v8.derived.IDerivedDataManager;
+import com._1c.g5.v8.dt.core.platform.IDtProjectManager;
 import com.ditrix.edt.mcp.server.Activator;
 
 /**
@@ -67,6 +68,46 @@ public final class SiriusCheckEnabler
     public static boolean isDisableProjectChecksPropertySet()
     {
         return Boolean.getBoolean(PROP_DISABLE_PROJECT_CHECKS);
+    }
+
+    /**
+     * Waits up to {@code waitReadySec} seconds for {@code projectName} to finish initial startup/build
+     * (i.e. {@link ProjectStateChecker#buildingErrorOrNull(String)} is {@code null} and EDT has started
+     * its {@code IDtProject} context). Returns immediately when already ready or when {@code waitReadySec <= 0}.
+     */
+    public static void waitProjectReady(String projectName, int waitReadySec)
+    {
+        if (projectName == null || projectName.isEmpty() || waitReadySec <= 0)
+        {
+            return;
+        }
+        ProjectContext ctx = ProjectContext.of(projectName);
+        if (!ctx.exists() || !ctx.isOpen())
+        {
+            return;
+        }
+        IProject project = ctx.project();
+        long deadline = System.currentTimeMillis() + (long) Math.min(waitReadySec, 300) * 1000L;
+        while (System.currentTimeMillis() < deadline)
+        {
+            boolean building = ProjectStateChecker.buildingErrorOrNull(projectName) != null;
+            IDtProjectManager dtMgr = Activator.getDefault() != null
+                ? Activator.getDefault().getDtProjectManager() : null;
+            boolean contextStarted = (dtMgr == null) || (dtMgr.getDtProject(project) != null);
+            if (!building && contextStarted)
+            {
+                return;
+            }
+            try
+            {
+                Thread.sleep(2000L);
+            }
+            catch (InterruptedException e)
+            {
+                Thread.currentThread().interrupt();
+                return;
+            }
+        }
     }
 
     /**
